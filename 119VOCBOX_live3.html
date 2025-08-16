@@ -1,27 +1,40 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Resistance & Current Viewer</title>
   <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; }
-    #controls { margin-bottom: 15px; }
-    label { margin-right: 10px; }
+    #controls { margin-bottom: 15px; display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; }
+    label { margin-right: 6px; }
     #plots { display: flex; flex-direction: column; gap: 40px; }
     .plot { width: 100%; height: 400px; }
+    #status { font-size: 12px; color: #666; }
   </style>
 </head>
 <body>
   <h2>Resistance & Current Viewer</h2>
+
   <div id="controls">
-    <input type="file" id="fileInput" accept=".csv,.txt" />
-    <label>Show last (s):
-      <input type="number" id="windowSec" min="0" placeholder="all">
-    </label>
-    <button onclick="drawPlots()">Update</button>
-    <button onclick="reloadFile()">Refresh</button>
+    <div>
+      <input type="file" id="fileInput" accept=".csv,.txt" />
+    </div>
+
+    <div>
+      <label>Show last (s):</label>
+      <input type="number" id="windowSec" min="0" placeholder="all" style="width:90px" />
+      <button onclick="drawPlots()">Update</button>
+      <button onclick="reloadFile()">Refresh</button>
+    </div>
+
+    <div>
+      <label>Auto refresh (s):</label>
+      <input type="number" id="refreshSec" min="1" placeholder="e.g. 5" style="width:90px" />
+      <button id="autoBtn" onclick="toggleAutoRefresh()">Start Auto</button>
+      <span id="status"></span>
+    </div>
   </div>
 
   <div id="plots">
@@ -31,7 +44,11 @@
 
   <script>
     let rawData = [];
-    let lastFile = null; // 记录最后一次选择的文件
+    let lastFile = null;     // 最后一次选择的文件
+    let refreshTimer = null; // 自动刷新计时器ID
+
+    const statusEl = document.getElementById("status");
+    const autoBtn  = document.getElementById("autoBtn");
 
     document.getElementById("fileInput").addEventListener("change", function (evt) {
       const file = evt.target.files[0];
@@ -39,6 +56,10 @@
       lastFile = file;
       parseFile(file);
     });
+
+    function setStatus(msg) {
+      statusEl.textContent = msg || "";
+    }
 
     function reloadFile() {
       if (lastFile) {
@@ -48,17 +69,44 @@
       }
     }
 
+    function toggleAutoRefresh() {
+      if (refreshTimer) {
+        clearInterval(refreshTimer);
+        refreshTimer = null;
+        autoBtn.textContent = "Start Auto";
+        setStatus("自动刷新已停止");
+        return;
+      }
+      const sec = parseFloat(document.getElementById("refreshSec").value);
+      if (isNaN(sec) || sec <= 0) {
+        alert("请输入有效的刷新间隔（秒）");
+        return;
+      }
+      // 立即刷新一次，然后按间隔刷新
+      reloadFile();
+      refreshTimer = setInterval(reloadFile, sec * 1000);
+      autoBtn.textContent = "Stop Auto";
+      setStatus(`已开启自动刷新：每 ${sec} 秒更新一次`);
+    }
+
+    // 解析文件（稳健处理多空格）
     function parseFile(file) {
       Papa.parse(file, {
-        delimiter: " ", // 你说的数据是单空格分隔
+        delimiter: " ",          // 你的数据为单空格；下行再做一次过滤以容忍多空格
         skipEmptyLines: true,
         complete: function (results) {
-          rawData = results.data.map(row => ({
-            time: parseFloat(row[0]),
-            current: parseFloat(row[1]),
-            resistance: parseFloat(row[2]),
-            sw: parseFloat(row[3]) > 0.5 ? 1 : 0
-          })).filter(r => !isNaN(r.time));
+          rawData = results.data.map(row => {
+            // 过滤多余空列，保证四列
+            row = row.filter(v => String(v).trim() !== "");
+            return {
+              time: parseFloat(row[0]),
+              current: parseFloat(row[1]),
+              resistance: parseFloat(row[2]),
+              sw: parseFloat(row[3]) > 0.5 ? 1 : 0
+            };
+          }).filter(r => !isNaN(r.time));
+
+          setStatus(`已载入 ${rawData.length} 行数据（${new Date().toLocaleTimeString()}）`);
           drawPlots();
         }
       });
@@ -76,38 +124,31 @@
         data = data.filter(d => d.time >= tmax - windowSec);
       }
 
-      const t = data.map(d => d.time);
-      const r = data.map(d => d.resistance);
-      const i = data.map(d => d.current);
+      const t  = data.map(d => d.time);
+      const r  = data.map(d => d.resistance);
+      const i  = data.map(d => d.current);
       const sw = data.map(d => d.sw);
 
-      let resTraces = [{
-        x: t, y: r, mode: "lines", name: "Resistance (Ohm)", line: { color: "blue" }
-      }];
-      let curTraces = [{
-        x: t, y: i, mode: "lines", name: "Current (A)", line: { color: "red" }
-      }];
+      // 曲线
+      const resTraces = [{ x: t, y: r, mode: "lines", name: "Resistance (Ohm)", line: { color: "blue" } }];
+      const curTraces = [{ x: t, y: i, mode: "lines", name: "Current (A)",    line: { color: "red"  } }];
 
+      // switch==1 的灰色背景
       let shapesRes = [], shapesCur = [];
       let inBlock = false, start = null;
       for (let j = 0; j < sw.length; j++) {
         if (sw[j] === 1 && !inBlock) {
-          inBlock = true;
-          start = t[j];
+          inBlock = true; start = t[j];
         } else if (sw[j] === 0 && inBlock) {
           inBlock = false;
-          shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
-                           fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
-          shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
-                           fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+          shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1, fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+          shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1, fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
         }
       }
-      if (inBlock) {
+      if (inBlock && t.length > 0) {
         const end = t[t.length - 1];
-        shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: end, y0: 0, y1: 1,
-                         fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
-        shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: end, y0: 0, y1: 1,
-                         fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+        shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: end, y0: 0, y1: 1, fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+        shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: end, y0: 0, y1: 1, fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
       }
 
       Plotly.newPlot("resPlot", resTraces, {
@@ -116,6 +157,7 @@
         yaxis: { title: "Resistance (Ohm)" },
         shapes: shapesRes
       });
+
       Plotly.newPlot("curPlot", curTraces, {
         title: "Current vs Time",
         xaxis: { title: "Time (s)" },
@@ -123,6 +165,11 @@
         shapes: shapesCur
       });
     }
+
+    // 关闭页面时清掉定时器
+    window.addEventListener("beforeunload", () => {
+      if (refreshTimer) clearInterval(refreshTimer);
+    });
   </script>
 </body>
 </html>
