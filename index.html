@@ -52,24 +52,24 @@
 
   <script>
     let rawData = [];
-    let lastFile = null;      // <input> 快照模式文件
-    let fileHandle = null;    // 实时模式句柄
-    let refreshTimer = null;  // 定时器
+    let lastFile = null;
+    let fileHandle = null;
+    let refreshTimer = null;
 
     const statusEl = document.getElementById("status");
     const autoBtn  = document.getElementById("autoBtn");
 
-    // ========== 选择文件（普通模式） ==========
+    // 快照模式
     document.getElementById("fileInput").addEventListener("change", function (evt) {
       const file = evt.target.files[0];
       if (!file) return;
-      fileHandle = null; // 切换到快照模式
+      fileHandle = null;
       lastFile = file;
       parseFile(file);
       setStatus("📂 使用快照文件模式");
     });
 
-    // ========== 选择实时文件（仅Chrome/Edge） ==========
+    // 实时模式
     async function pickLiveFile() {
       if (!window.showOpenFilePicker) {
         alert("当前浏览器不支持 File System Access API，请使用 Chrome/Edge/Chromium。");
@@ -79,7 +79,7 @@
         [fileHandle] = await window.showOpenFilePicker({
           types: [{ description: "Text/CSV files", accept: { "text/plain": [".txt", ".csv"] } }]
         });
-        lastFile = null; // 切换到实时模式
+        lastFile = null;
         await reloadFile();
         setStatus("⏱️ 使用实时文件模式");
       } catch (err) {
@@ -87,16 +87,13 @@
       }
     }
 
-    // ========== 状态显示 ==========
     function setStatus(msg) {
       statusEl.textContent = msg || "";
     }
 
-    // ========== 手动刷新 ==========
     async function reloadFile() {
       try {
         if (fileHandle) {
-          // 实时模式：每次 getFile() 拿最新内容
           const file = await fileHandle.getFile();
           parseFile(file);
         } else if (lastFile) {
@@ -109,7 +106,6 @@
       }
     }
 
-    // ========== 自动刷新 ==========
     function toggleAutoRefresh() {
       if (refreshTimer) {
         clearInterval(refreshTimer);
@@ -129,7 +125,7 @@
       setStatus(`已开启自动刷新：每 ${sec} 秒更新一次`);
     }
 
-    // ========== 解析文件 ==========
+    // 解析文件 ✅ 加入第5列 volume
     function parseFile(file) {
       Papa.parse(file, {
         delimiter: " ",
@@ -141,7 +137,8 @@
               time: parseFloat(row[0]),
               current: parseFloat(row[1]),
               resistance: parseFloat(row[2]),
-              sw: parseFloat(row[3]) > 0.5 ? 1 : 0
+              sw: parseFloat(row[3]) > 0.5 ? 1 : 0,
+              volume: parseFloat(row[4])   // ✅ 新增
             };
           }).filter(r => !isNaN(r.time));
 
@@ -151,7 +148,7 @@
       });
     }
 
-    // ========== 绘图 ==========
+    // 绘图 ✅ 在灰色区块加上体积注释
     function drawPlots() {
       if (rawData.length === 0) return;
 
@@ -173,38 +170,50 @@
       const curTraces = [{ x: t, y: i, mode: "lines", name: "Current (A)",    line: { color: "red"  } }];
 
       let shapesRes = [], shapesCur = [];
-      let inBlock = false, start = null;
+      let annotationsRes = [], annotationsCur = [];
+      let inBlock = false, start = null, vol = null;
+
       for (let j = 0; j < sw.length; j++) {
         if (sw[j] === 1 && !inBlock) {
-          inBlock = true; start = t[j];
+          inBlock = true;
+          start = t[j];
+          vol = data[j].volume;  // 记录体积
         } else if (sw[j] === 0 && inBlock) {
           inBlock = false;
-          shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1, fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
-          shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1, fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+          const mid = (start + t[j]) / 2;
+
+          shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
+                           fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+          shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
+                           fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+
+          // 注释体积
+          annotationsRes.push({ x: mid, y: 1.02, xref: "x", yref: "paper",
+                                text: `Vol=${vol}`, showarrow: false,
+                                font: { size: 12, color: "black" } });
+          annotationsCur.push({ x: mid, y: 1.02, xref: "x", yref: "paper",
+                                text: `Vol=${vol}`, showarrow: false,
+                                font: { size: 12, color: "black" } });
         }
-      }
-      if (inBlock && t.length > 0) {
-        const end = t[t.length - 1];
-        shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: end, y0: 0, y1: 1, fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
-        shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: end, y0: 0, y1: 1, fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
       }
 
       Plotly.newPlot("resPlot", resTraces, {
         title: "Resistance vs Time",
         xaxis: { title: "Time (s)" },
         yaxis: { title: "Resistance (Ohm)" },
-        shapes: shapesRes
+        shapes: shapesRes,
+        annotations: annotationsRes
       });
 
       Plotly.newPlot("curPlot", curTraces, {
         title: "Current vs Time",
         xaxis: { title: "Time (s)" },
         yaxis: { title: "Current (A)" },
-        shapes: shapesCur
+        shapes: shapesCur,
+        annotations: annotationsCur
       });
     }
 
-    // 页面关闭时清掉定时器
     window.addEventListener("beforeunload", () => {
       if (refreshTimer) clearInterval(refreshTimer);
     });
