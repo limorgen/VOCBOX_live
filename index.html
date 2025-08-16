@@ -18,8 +18,16 @@
   <h2>Resistance & Current Viewer</h2>
 
   <div id="controls">
+    <!-- 普通模式 -->
     <div>
       <input type="file" id="fileInput" accept=".csv,.txt" />
+      <span style="font-size:12px;color:#666">（快照模式）</span>
+    </div>
+
+    <!-- 实时模式 -->
+    <div>
+      <button id="liveBtn" onclick="pickLiveFile()">选择实时文件</button>
+      <span style="font-size:12px;color:#666">（仅Chrome/Edge/Chromium）</span>
     </div>
 
     <div>
@@ -44,31 +52,64 @@
 
   <script>
     let rawData = [];
-    let lastFile = null;     // 最后一次选择的文件
-    let refreshTimer = null; // 自动刷新计时器ID
+    let lastFile = null;      // <input> 快照模式文件
+    let fileHandle = null;    // 实时模式句柄
+    let refreshTimer = null;  // 定时器
 
     const statusEl = document.getElementById("status");
     const autoBtn  = document.getElementById("autoBtn");
 
+    // ========== 选择文件（普通模式） ==========
     document.getElementById("fileInput").addEventListener("change", function (evt) {
       const file = evt.target.files[0];
       if (!file) return;
+      fileHandle = null; // 切换到快照模式
       lastFile = file;
       parseFile(file);
+      setStatus("📂 使用快照文件模式");
     });
 
+    // ========== 选择实时文件（仅Chrome/Edge） ==========
+    async function pickLiveFile() {
+      if (!window.showOpenFilePicker) {
+        alert("当前浏览器不支持 File System Access API，请使用 Chrome/Edge/Chromium。");
+        return;
+      }
+      try {
+        [fileHandle] = await window.showOpenFilePicker({
+          types: [{ description: "Text/CSV files", accept: { "text/plain": [".txt", ".csv"] } }]
+        });
+        lastFile = null; // 切换到实时模式
+        await reloadFile();
+        setStatus("⏱️ 使用实时文件模式");
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    // ========== 状态显示 ==========
     function setStatus(msg) {
       statusEl.textContent = msg || "";
     }
 
-    function reloadFile() {
-      if (lastFile) {
-        parseFile(lastFile);
-      } else {
-        alert("请先选择一个文件");
+    // ========== 手动刷新 ==========
+    async function reloadFile() {
+      try {
+        if (fileHandle) {
+          // 实时模式：每次 getFile() 拿最新内容
+          const file = await fileHandle.getFile();
+          parseFile(file);
+        } else if (lastFile) {
+          parseFile(lastFile);
+        } else {
+          alert("请先选择一个文件");
+        }
+      } catch (err) {
+        console.error("刷新失败:", err);
       }
     }
 
+    // ========== 自动刷新 ==========
     function toggleAutoRefresh() {
       if (refreshTimer) {
         clearInterval(refreshTimer);
@@ -82,21 +123,19 @@
         alert("请输入有效的刷新间隔（秒）");
         return;
       }
-      // 立即刷新一次，然后按间隔刷新
       reloadFile();
       refreshTimer = setInterval(reloadFile, sec * 1000);
       autoBtn.textContent = "Stop Auto";
       setStatus(`已开启自动刷新：每 ${sec} 秒更新一次`);
     }
 
-    // 解析文件（稳健处理多空格）
+    // ========== 解析文件 ==========
     function parseFile(file) {
       Papa.parse(file, {
-        delimiter: " ",          // 你的数据为单空格；下行再做一次过滤以容忍多空格
+        delimiter: " ",
         skipEmptyLines: true,
         complete: function (results) {
           rawData = results.data.map(row => {
-            // 过滤多余空列，保证四列
             row = row.filter(v => String(v).trim() !== "");
             return {
               time: parseFloat(row[0]),
@@ -106,12 +145,13 @@
             };
           }).filter(r => !isNaN(r.time));
 
-          setStatus(`已载入 ${rawData.length} 行数据（${new Date().toLocaleTimeString()}）`);
+          setStatus(`载入 ${rawData.length} 行数据（${new Date().toLocaleTimeString()}）`);
           drawPlots();
         }
       });
     }
 
+    // ========== 绘图 ==========
     function drawPlots() {
       if (rawData.length === 0) return;
 
@@ -129,11 +169,9 @@
       const i  = data.map(d => d.current);
       const sw = data.map(d => d.sw);
 
-      // 曲线
       const resTraces = [{ x: t, y: r, mode: "lines", name: "Resistance (Ohm)", line: { color: "blue" } }];
       const curTraces = [{ x: t, y: i, mode: "lines", name: "Current (A)",    line: { color: "red"  } }];
 
-      // switch==1 的灰色背景
       let shapesRes = [], shapesCur = [];
       let inBlock = false, start = null;
       for (let j = 0; j < sw.length; j++) {
@@ -166,7 +204,7 @@
       });
     }
 
-    // 关闭页面时清掉定时器
+    // 页面关闭时清掉定时器
     window.addEventListener("beforeunload", () => {
       if (refreshTimer) clearInterval(refreshTimer);
     });
