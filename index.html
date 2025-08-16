@@ -51,172 +51,177 @@
   </div>
 
   <script>
-    let rawData = [];
-    let lastFile = null;
-    let fileHandle = null;
-    let refreshTimer = null;
+  let rawData = [];
+  let lastFile = null;
+  let fileHandle = null;
+  let refreshTimer = null;
 
-    const statusEl = document.getElementById("status");
-    const autoBtn  = document.getElementById("autoBtn");
+  const statusEl = document.getElementById("status");
+  const autoBtn  = document.getElementById("autoBtn");
 
-    // 快照模式
-    document.getElementById("fileInput").addEventListener("change", function (evt) {
-      const file = evt.target.files[0];
-      if (!file) return;
-      fileHandle = null;
-      lastFile = file;
-      parseFile(file);
-      setStatus("📂 使用快照文件模式");
+  document.getElementById("fileInput").addEventListener("change", function (evt) {
+    const file = evt.target.files[0];
+    if (!file) return;
+    fileHandle = null;
+    lastFile = file;
+    parseFile(file);
+    setStatus("📂 使用快照文件模式");
+  });
+
+  async function pickLiveFile() {
+    if (!window.showOpenFilePicker) {
+      alert("当前浏览器不支持 File System Access API，请使用 Chromium 内核浏览器。");
+      return;
+    }
+    try {
+      [fileHandle] = await window.showOpenFilePicker({
+        types: [{ description: "Text/CSV files", accept: { "text/plain": [".txt", ".csv"] } }]
+      });
+      lastFile = null;
+      await reloadFile();
+      setStatus("⏱️ 使用实时文件模式");
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg || "";
+  }
+
+  async function reloadFile() {
+    try {
+      if (fileHandle) {
+        const file = await fileHandle.getFile();
+        parseFile(file);
+      } else if (lastFile) {
+        parseFile(lastFile);
+      } else {
+        alert("请先选择一个文件");
+      }
+    } catch (err) {
+      console.error("刷新失败:", err);
+    }
+  }
+
+  function toggleAutoRefresh() {
+    if (refreshTimer) {
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+      autoBtn.textContent = "Start Auto";
+      setStatus("自动刷新已停止");
+      return;
+    }
+    const sec = parseFloat(document.getElementById("refreshSec").value);
+    if (isNaN(sec) || sec <= 0) {
+      alert("请输入有效的刷新间隔（秒）");
+      return;
+    }
+    reloadFile();
+    refreshTimer = setInterval(reloadFile, sec * 1000);
+    autoBtn.textContent = "Stop Auto";
+    setStatus(`已开启自动刷新：每 ${sec} 秒更新一次`);
+  }
+
+  function parseFile(file) {
+    Papa.parse(file, {
+      delimiter: " ",
+      skipEmptyLines: true,
+      complete: function (results) {
+        rawData = results.data.map(row => {
+          row = row.filter(v => String(v).trim() !== "");
+          return {
+            time: parseFloat(row[0]),
+            current: parseFloat(row[1]),
+            resistance: parseFloat(row[2]),
+            sw: parseFloat(row[3]) > 0.5 ? 1 : 0,
+            volume: parseFloat(row[4])
+          };
+        }).filter(r => !isNaN(r.time));
+
+        setStatus(`载入 ${rawData.length} 行数据（${new Date().toLocaleTimeString()}）`);
+        drawPlots();
+      }
     });
+  }
 
-    // 实时模式
-    async function pickLiveFile() {
-      if (!window.showOpenFilePicker) {
-        alert("当前浏览器不支持 File System Access API，请使用 Chrome/Edge/Chromium。");
-        return;
-      }
-      try {
-        [fileHandle] = await window.showOpenFilePicker({
-          types: [{ description: "Text/CSV files", accept: { "text/plain": [".txt", ".csv"] } }]
-        });
-        lastFile = null;
-        await reloadFile();
-        setStatus("⏱️ 使用实时文件模式");
-      } catch (err) {
-        console.error(err);
+  // ⚡ 优化：第一次用 newPlot，之后用 Plotly.react 更新
+  let initialized = false;
+
+  function drawPlots() {
+    if (rawData.length === 0) return;
+
+    let windowSec = parseFloat(document.getElementById("windowSec").value);
+    if (isNaN(windowSec) || windowSec <= 0) windowSec = null;
+
+    let data = rawData;
+    if (windowSec) {
+      const tmax = data[data.length - 1].time;
+      data = data.filter(d => d.time >= tmax - windowSec);
+    }
+
+    const t  = data.map(d => d.time);
+    const r  = data.map(d => d.resistance);
+    const i  = data.map(d => d.current);
+    const sw = data.map(d => d.sw);
+
+    const resTraces = [{ x: t, y: r, mode: "lines", name: "Resistance (Ohm)", line: { color: "blue" } }];
+    const curTraces = [{ x: t, y: i, mode: "lines", name: "Current (A)",    line: { color: "red"  } }];
+
+    let shapesRes = [], shapesCur = [];
+    let annotationsRes = [], annotationsCur = [];
+    let inBlock = false, start = null, vol = null;
+
+    for (let j = 0; j < sw.length; j++) {
+      if (sw[j] === 1 && !inBlock) {
+        inBlock = true;
+        start = t[j];
+        vol = data[j].volume;
+      } else if (sw[j] === 0 && inBlock) {
+        inBlock = false;
+        const mid = (start + t[j]) / 2;
+
+        shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
+                         fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+        shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
+                         fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+
+        annotationsRes.push({ x: mid, y: 1.02, xref: "x", yref: "paper", text: `Vol=${vol}`, showarrow: false,
+                              font: { size: 12, color: "black" } });
+        annotationsCur.push({ x: mid, y: 1.02, xref: "x", yref: "paper", text: `Vol=${vol}`, showarrow: false,
+                              font: { size: 12, color: "black" } });
       }
     }
 
-    function setStatus(msg) {
-      statusEl.textContent = msg || "";
+    const layoutRes = {
+      title: "Resistance vs Time",
+      xaxis: { title: "Time (s)" },
+      yaxis: { title: "Resistance (Ohm)" },
+      shapes: shapesRes,
+      annotations: annotationsRes
+    };
+    const layoutCur = {
+      title: "Current vs Time",
+      xaxis: { title: "Time (s)" },
+      yaxis: { title: "Current (A)" },
+      shapes: shapesCur,
+      annotations: annotationsCur
+    };
+
+    if (!initialized) {
+      Plotly.newPlot("resPlot", resTraces, layoutRes);
+      Plotly.newPlot("curPlot", curTraces, layoutCur);
+      initialized = true;
+    } else {
+      Plotly.react("resPlot", resTraces, layoutRes);
+      Plotly.react("curPlot", curTraces, layoutCur);
     }
+  }
 
-    async function reloadFile() {
-      try {
-        if (fileHandle) {
-          const file = await fileHandle.getFile();
-          parseFile(file);
-        } else if (lastFile) {
-          parseFile(lastFile);
-        } else {
-          alert("请先选择一个文件");
-        }
-      } catch (err) {
-        console.error("刷新失败:", err);
-      }
-    }
+  window.addEventListener("beforeunload", () => {
+    if (refreshTimer) clearInterval(refreshTimer);
+  });
+</script>
 
-    function toggleAutoRefresh() {
-      if (refreshTimer) {
-        clearInterval(refreshTimer);
-        refreshTimer = null;
-        autoBtn.textContent = "Start Auto";
-        setStatus("自动刷新已停止");
-        return;
-      }
-      const sec = parseFloat(document.getElementById("refreshSec").value);
-      if (isNaN(sec) || sec <= 0) {
-        alert("请输入有效的刷新间隔（秒）");
-        return;
-      }
-      reloadFile();
-      refreshTimer = setInterval(reloadFile, sec * 1000);
-      autoBtn.textContent = "Stop Auto";
-      setStatus(`已开启自动刷新：每 ${sec} 秒更新一次`);
-    }
-
-    // 解析文件 ✅ 加入第5列 volume
-    function parseFile(file) {
-      Papa.parse(file, {
-        delimiter: " ",
-        skipEmptyLines: true,
-        complete: function (results) {
-          rawData = results.data.map(row => {
-            row = row.filter(v => String(v).trim() !== "");
-            return {
-              time: parseFloat(row[0]),
-              current: parseFloat(row[1]),
-              resistance: parseFloat(row[2]),
-              sw: parseFloat(row[3]) > 0.5 ? 1 : 0,
-              volume: parseFloat(row[4])   // ✅ 新增
-            };
-          }).filter(r => !isNaN(r.time));
-
-          setStatus(`载入 ${rawData.length} 行数据（${new Date().toLocaleTimeString()}）`);
-          drawPlots();
-        }
-      });
-    }
-
-    // 绘图 ✅ 在灰色区块加上体积注释
-    function drawPlots() {
-      if (rawData.length === 0) return;
-
-      let windowSec = parseFloat(document.getElementById("windowSec").value);
-      if (isNaN(windowSec) || windowSec <= 0) windowSec = null;
-
-      let data = rawData;
-      if (windowSec) {
-        const tmax = data[data.length - 1].time;
-        data = data.filter(d => d.time >= tmax - windowSec);
-      }
-
-      const t  = data.map(d => d.time);
-      const r  = data.map(d => d.resistance);
-      const i  = data.map(d => d.current);
-      const sw = data.map(d => d.sw);
-
-      const resTraces = [{ x: t, y: r, mode: "lines", name: "Resistance (Ohm)", line: { color: "blue" } }];
-      const curTraces = [{ x: t, y: i, mode: "lines", name: "Current (A)",    line: { color: "red"  } }];
-
-      let shapesRes = [], shapesCur = [];
-      let annotationsRes = [], annotationsCur = [];
-      let inBlock = false, start = null, vol = null;
-
-      for (let j = 0; j < sw.length; j++) {
-        if (sw[j] === 1 && !inBlock) {
-          inBlock = true;
-          start = t[j];
-          vol = data[j].volume;  // 记录体积
-        } else if (sw[j] === 0 && inBlock) {
-          inBlock = false;
-          const mid = (start + t[j]) / 2;
-
-          shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
-                           fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
-          shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
-                           fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
-
-          // 注释体积
-          annotationsRes.push({ x: mid, y: 1.02, xref: "x", yref: "paper",
-                                text: `Vol=${vol}`, showarrow: false,
-                                font: { size: 12, color: "black" } });
-          annotationsCur.push({ x: mid, y: 1.02, xref: "x", yref: "paper",
-                                text: `Vol=${vol}`, showarrow: false,
-                                font: { size: 12, color: "black" } });
-        }
-      }
-
-      Plotly.newPlot("resPlot", resTraces, {
-        title: "Resistance vs Time",
-        xaxis: { title: "Time (s)" },
-        yaxis: { title: "Resistance (Ohm)" },
-        shapes: shapesRes,
-        annotations: annotationsRes
-      });
-
-      Plotly.newPlot("curPlot", curTraces, {
-        title: "Current vs Time",
-        xaxis: { title: "Time (s)" },
-        yaxis: { title: "Current (A)" },
-        shapes: shapesCur,
-        annotations: annotationsCur
-      });
-    }
-
-    window.addEventListener("beforeunload", () => {
-      if (refreshTimer) clearInterval(refreshTimer);
-    });
-  </script>
 </body>
 </html>
