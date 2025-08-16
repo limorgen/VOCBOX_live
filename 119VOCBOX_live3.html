@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Resistance & Current Viewer</title>
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    #controls { margin-bottom: 15px; }
+    label { margin-right: 10px; }
+    #plots { display: flex; flex-direction: column; gap: 40px; }
+    .plot { width: 100%; height: 400px; }
+  </style>
+</head>
+<body>
+  <h2>Resistance & Current Viewer</h2>
+  <div id="controls">
+    <input type="file" id="fileInput" accept=".csv,.txt" />
+    <label>Show last (s):
+      <input type="number" id="windowSec" min="0" placeholder="all">
+    </label>
+    <button onclick="drawPlots()">Update</button>
+    <button onclick="reloadFile()">Refresh</button>
+  </div>
+
+  <div id="plots">
+    <div id="resPlot" class="plot"></div>
+    <div id="curPlot" class="plot"></div>
+  </div>
+
+  <script>
+    let rawData = [];
+    let lastFile = null; // 记录最后一次选择的文件
+
+    document.getElementById("fileInput").addEventListener("change", function (evt) {
+      const file = evt.target.files[0];
+      if (!file) return;
+      lastFile = file;
+      parseFile(file);
+    });
+
+    function reloadFile() {
+      if (lastFile) {
+        parseFile(lastFile);
+      } else {
+        alert("请先选择一个文件");
+      }
+    }
+
+    function parseFile(file) {
+      Papa.parse(file, {
+        delimiter: " ", // 你说的数据是单空格分隔
+        skipEmptyLines: true,
+        complete: function (results) {
+          rawData = results.data.map(row => ({
+            time: parseFloat(row[0]),
+            current: parseFloat(row[1]),
+            resistance: parseFloat(row[2]),
+            sw: parseFloat(row[3]) > 0.5 ? 1 : 0
+          })).filter(r => !isNaN(r.time));
+          drawPlots();
+        }
+      });
+    }
+
+    function drawPlots() {
+      if (rawData.length === 0) return;
+
+      let windowSec = parseFloat(document.getElementById("windowSec").value);
+      if (isNaN(windowSec) || windowSec <= 0) windowSec = null;
+
+      let data = rawData;
+      if (windowSec) {
+        const tmax = data[data.length - 1].time;
+        data = data.filter(d => d.time >= tmax - windowSec);
+      }
+
+      const t = data.map(d => d.time);
+      const r = data.map(d => d.resistance);
+      const i = data.map(d => d.current);
+      const sw = data.map(d => d.sw);
+
+      let resTraces = [{
+        x: t, y: r, mode: "lines", name: "Resistance (Ohm)", line: { color: "blue" }
+      }];
+      let curTraces = [{
+        x: t, y: i, mode: "lines", name: "Current (A)", line: { color: "red" }
+      }];
+
+      let shapesRes = [], shapesCur = [];
+      let inBlock = false, start = null;
+      for (let j = 0; j < sw.length; j++) {
+        if (sw[j] === 1 && !inBlock) {
+          inBlock = true;
+          start = t[j];
+        } else if (sw[j] === 0 && inBlock) {
+          inBlock = false;
+          shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
+                           fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+          shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: t[j], y0: 0, y1: 1,
+                           fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+        }
+      }
+      if (inBlock) {
+        const end = t[t.length - 1];
+        shapesRes.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: end, y0: 0, y1: 1,
+                         fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+        shapesCur.push({ type: "rect", xref: "x", yref: "paper", x0: start, x1: end, y0: 0, y1: 1,
+                         fillcolor: "grey", opacity: 0.2, line: { width: 0 } });
+      }
+
+      Plotly.newPlot("resPlot", resTraces, {
+        title: "Resistance vs Time",
+        xaxis: { title: "Time (s)" },
+        yaxis: { title: "Resistance (Ohm)" },
+        shapes: shapesRes
+      });
+      Plotly.newPlot("curPlot", curTraces, {
+        title: "Current vs Time",
+        xaxis: { title: "Time (s)" },
+        yaxis: { title: "Current (A)" },
+        shapes: shapesCur
+      });
+    }
+  </script>
+</body>
+</html>
